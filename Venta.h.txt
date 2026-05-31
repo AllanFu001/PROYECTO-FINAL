@@ -1,0 +1,579 @@
+#pragma once
+
+#include "ConexionBD.h"
+#include <cctype>
+#include <ctime>
+#include <direct.h>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <vector>
+
+using namespace std;
+
+struct ProductoFactura {
+    int id_producto = 0;
+    string nombre;
+    string marca;
+    int cantidad = 0;
+    double precio_unitario = 0;
+    double subtotal = 0;
+};
+
+class Venta {
+private:
+    int id_cliente;
+    int id_empleado;
+    string nit;
+    string nombre_cliente;
+    string serie;
+    int numero_factura;
+    double total;
+    vector<ProductoFactura> productos;
+
+    void limpiarBuffer() {
+        cin.clear();
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+    }
+
+    int leerEntero(string mensaje) {
+        string entrada;
+
+        while (true) {
+            cout << mensaje;
+            getline(cin, entrada);
+
+            if (regex_match(entrada, regex("^[0-9]+$"))) {
+                return stoi(entrada);
+            }
+
+            cout << "[!] ERROR: Solo se permiten numeros enteros. Intente nuevamente." << endl;
+        }
+    }
+
+    string leerTexto(string mensaje) {
+        string valor;
+        cout << mensaje;
+        getline(cin, valor);
+        return valor;
+    }
+
+    string leerSoloLetras(string mensaje) {
+        string valor;
+
+        while (true) {
+            cout << mensaje;
+            getline(cin, valor);
+
+            if (regex_match(valor, regex("^[A-Za-z ]+$")) && valor.length() <= 60) {
+                return valor;
+            }
+
+            cout << "[!] ERROR: Solo se permiten letras y espacios. Maximo 60 caracteres." << endl;
+        }
+    }
+
+    string leerSoloNumeros(string mensaje) {
+        string valor;
+
+        while (true) {
+            cout << mensaje;
+            getline(cin, valor);
+
+            if (regex_match(valor, regex("^[0-9]+$"))) {
+                return valor;
+            }
+
+            cout << "[!] ERROR: Solo se permiten numeros. No use letras ni simbolos." << endl;
+        }
+    }
+
+    string leerTelefono(string mensaje) {
+        string valor;
+
+        while (true) {
+            cout << mensaje;
+            getline(cin, valor);
+
+            if (regex_match(valor, regex("^[0-9]{1,8}$"))) {
+                return valor;
+            }
+
+            cout << "[!] ERROR: El telefono solo acepta numeros y maximo 8 digitos." << endl;
+        }
+    }
+
+    string normalizarNit(string valor) {
+        for (char& c : valor) {
+            c = (char)toupper((unsigned char)c);
+        }
+        if (valor == "CF") valor = "C/F";
+        return valor;
+    }
+
+    bool nitValido(string valor) {
+        if (valor == "C/F") return true;
+        if (valor.length() < 2 || valor.length() > 20) return false;
+        return regex_match(valor, regex("^[A-Z0-9-]+$"));
+    }
+
+    string decimalSql(double valor) {
+        stringstream ss;
+        ss << fixed << setprecision(2) << valor;
+        return ss.str();
+    }
+
+    string escaparPdf(string texto) {
+        string resultado = "";
+
+        for (char c : texto) {
+            if (c == '(' || c == ')' || c == '\\') {
+                resultado += '\\';
+            }
+            resultado += c;
+        }
+
+        return resultado;
+    }
+
+    string formatearFactura(int numero) {
+        stringstream ss;
+        ss << setw(6) << setfill('0') << numero;
+        ss << setfill(' ');
+        return ss.str();
+    }
+
+    string fechaActualPdf() {
+        time_t ahora = time(nullptr);
+        tm fechaLocal;
+        localtime_s(&fechaLocal, &ahora);
+
+        stringstream ss;
+        ss << setw(2) << setfill('0') << fechaLocal.tm_mday << "/"
+            << setw(2) << setfill('0') << (fechaLocal.tm_mon + 1) << "/"
+            << (fechaLocal.tm_year + 1900);
+        ss << setfill(' ');
+        return ss.str();
+    }
+
+    int obtenerUltimoId(MYSQL* conector) {
+        MYSQL_ROW fila;
+        MYSQL_RES* resultado;
+        int id = 0;
+
+        mysql_query(conector, "SELECT LAST_INSERT_ID();");
+        resultado = mysql_store_result(conector);
+
+        if ((fila = mysql_fetch_row(resultado))) {
+            id = atoi(fila[0]);
+        }
+
+        mysql_free_result(resultado);
+        return id;
+    }
+
+    int obtenerSiguienteFactura(MYSQL* conector) {
+        MYSQL_ROW fila;
+        MYSQL_RES* resultado;
+        int numero = 1;
+
+        mysql_query(conector, "SELECT IFNULL(MAX(no_factura), 0) + 1 FROM ventas WHERE serie='A';");
+        resultado = mysql_store_result(conector);
+
+        if ((fila = mysql_fetch_row(resultado))) {
+            numero = atoi(fila[0]);
+        }
+
+        mysql_free_result(resultado);
+        return numero;
+    }
+
+    bool buscarCliente(ConexionBD& cn) {
+        MYSQL_ROW fila;
+        MYSQL_RES* resultado;
+        string consulta = "SELECT id_cliente, nombre FROM clientes WHERE nit='" + cn.escapar(nit) + "';";
+
+        if (mysql_query(cn.getConector(), consulta.c_str())) {
+            cout << "[!] ERROR: No se pudo buscar el cliente." << endl;
+            return false;
+        }
+
+        resultado = mysql_store_result(cn.getConector());
+
+        if ((fila = mysql_fetch_row(resultado))) {
+            id_cliente = atoi(fila[0]);
+            nombre_cliente = fila[1];
+            mysql_free_result(resultado);
+            return true;
+        }
+
+        mysql_free_result(resultado);
+        cout << "[!] ERROR: El NIT no existe en clientes. Ingrese un NIT registrado." << endl;
+        return false;
+    }
+
+    bool buscarEmpleado(ConexionBD& cn) {
+        MYSQL_ROW fila;
+        MYSQL_RES* resultado;
+        string consulta = "SELECT id_empleado FROM empleados WHERE id_empleado=" + to_string(id_empleado) + ";";
+
+        if (mysql_query(cn.getConector(), consulta.c_str())) {
+            cout << "[!] ERROR: No se pudo verificar el empleado." << endl;
+            return false;
+        }
+
+        resultado = mysql_store_result(cn.getConector());
+
+        if ((fila = mysql_fetch_row(resultado))) {
+            mysql_free_result(resultado);
+            return true;
+        }
+
+        mysql_free_result(resultado);
+        cout << "[!] ERROR: El empleado/cajero no existe. Ingrese un ID registrado." << endl;
+        return false;
+    }
+
+    bool buscarProducto(ConexionBD& cn, int idProducto, int& existencia, string& nombreProducto, string& marcaProducto, double& precioVenta) {
+        MYSQL_ROW fila;
+        MYSQL_RES* resultado;
+        string consulta =
+            "SELECT p.producto, m.marca, p.precio_venta, p.existencia "
+            "FROM productos p INNER JOIN marcas m ON p.id_marca=m.id_marca "
+            "WHERE p.id_producto=" + to_string(idProducto) + ";";
+
+        if (mysql_query(cn.getConector(), consulta.c_str())) {
+            cout << "[!] ERROR: No se pudo buscar el producto." << endl;
+            return false;
+        }
+
+        resultado = mysql_store_result(cn.getConector());
+
+        if (!(fila = mysql_fetch_row(resultado))) {
+            cout << "Producto no encontrado." << endl;
+            mysql_free_result(resultado);
+            return false;
+        }
+
+        existencia = atoi(fila[3]);
+        nombreProducto = fila[0];
+        marcaProducto = fila[1];
+        precioVenta = atof(fila[2]);
+
+        cout << "Producto: " << nombreProducto << endl;
+        cout << "Marca: " << marcaProducto << endl;
+        cout << "Precio venta: Q" << fixed << setprecision(2) << precioVenta << endl;
+        cout << "Existencia disponible: " << existencia << endl;
+
+        mysql_free_result(resultado);
+        return true;
+    }
+
+    void agregarProductoFactura(int idProducto, int cantidad, string nombreProducto, string marcaProducto, double precioVenta) {
+        ProductoFactura item;
+        item.id_producto = idProducto;
+        item.nombre = nombreProducto;
+        item.marca = marcaProducto;
+        item.cantidad = cantidad;
+        item.precio_unitario = precioVenta;
+        item.subtotal = item.precio_unitario * cantidad;
+
+        productos.push_back(item);
+        total += item.subtotal;
+
+        cout << "Producto agregado. Subtotal: Q" << fixed << setprecision(2)
+            << item.subtotal << " | Total: Q" << total << endl;
+    }
+
+    void imprimirFactura() {
+        cout << "\n================ FACTURA ================" << endl;
+        cout << "        SuperMercado ElbuenAmigo" << endl;
+        cout << "-----------------------------------------" << endl;
+        cout << "Serie: " << serie << "   Factura No: " << numero_factura << endl;
+        cout << "Cliente: " << nombre_cliente << endl;
+        cout << "NIT: " << nit << endl;
+        cout << "Empleado ID: " << id_empleado << endl;
+        cout << "-----------------------------------------" << endl;
+        cout << left << setw(18) << "Producto"
+            << setw(12) << "Marca"
+            << setw(8) << "Cant."
+            << setw(10) << "Precio"
+            << "Subtotal" << endl;
+
+        for (ProductoFactura item : productos) {
+            cout << left << setw(18) << item.nombre.substr(0, 17)
+                << setw(12) << item.marca.substr(0, 11)
+                << setw(8) << item.cantidad
+                << "Q" << setw(9) << fixed << setprecision(2) << item.precio_unitario
+                << "Q" << item.subtotal << endl;
+        }
+
+        cout << "-----------------------------------------" << endl;
+        cout << "TOTAL: Q" << fixed << setprecision(2) << total << endl;
+        cout << "=========================================" << endl;
+    }
+
+    void agregarTextoPdf(stringstream& contenido, int x, int y, int tamanio, string texto, bool negrita = false) {
+        contenido << "BT\n";
+        contenido << (negrita ? "/F2 " : "/F1 ") << tamanio << " Tf\n";
+        contenido << x << " " << y << " Td\n";
+        contenido << "(" << escaparPdf(texto) << ") Tj\n";
+        contenido << "ET\n";
+    }
+
+    void agregarLineaPdf(stringstream& contenido, int x1, int y1, int x2, int y2) {
+        contenido << x1 << " " << y1 << " m " << x2 << " " << y2 << " l S\n";
+    }
+
+    void generarFacturaPdf() {
+        string carpeta = "C:\\Users\\Oscar Hernandez\\Documents\\FacturasSupermercado";
+        _mkdir(carpeta.c_str());
+
+        string nombreArchivo = carpeta + "\\factura_" + serie + "_" + to_string(numero_factura) + ".pdf";
+        ofstream pdf(nombreArchivo, ios::binary);
+
+        if (!pdf.is_open()) {
+            cout << "[!] ERROR: No se pudo crear el archivo PDF de la factura." << endl;
+            return;
+        }
+
+        stringstream contenido;
+        contenido << "1 w\n";
+
+        agregarTextoPdf(contenido, 210, 735, 18, "SUPERMERCADO ELBUENAMIGO", true);
+        agregarTextoPdf(contenido, 255, 710, 14, "Factura de venta");
+        agregarLineaPdf(contenido, 55, 695, 555, 695);
+
+        agregarTextoPdf(contenido, 65, 670, 11, "Factura No: " + formatearFactura(numero_factura));
+        agregarTextoPdf(contenido, 205, 670, 11, "Serie: " + serie);
+        agregarTextoPdf(contenido, 65, 650, 11, "Fecha: " + fechaActualPdf());
+        agregarTextoPdf(contenido, 65, 630, 11, "NIT: " + nit);
+        agregarTextoPdf(contenido, 65, 610, 11, "Cliente: " + nombre_cliente);
+        agregarTextoPdf(contenido, 65, 590, 11, "Direccion: Ciudad");
+
+        agregarLineaPdf(contenido, 55, 575, 555, 575);
+        agregarTextoPdf(contenido, 65, 555, 10, "COD", true);
+        agregarTextoPdf(contenido, 115, 555, 10, "PRODUCTO", true);
+        agregarTextoPdf(contenido, 350, 555, 10, "CANT", true);
+        agregarTextoPdf(contenido, 415, 555, 10, "PRECIO", true);
+        agregarTextoPdf(contenido, 495, 555, 10, "SUBTOTAL", true);
+        agregarLineaPdf(contenido, 55, 542, 555, 542);
+
+        int y = 522;
+        for (ProductoFactura item : productos) {
+            stringstream linea;
+            string nombreCorto = item.nombre.length() > 30 ? item.nombre.substr(0, 30) : item.nombre;
+
+            agregarTextoPdf(contenido, 65, y, 10, to_string(item.id_producto));
+            agregarTextoPdf(contenido, 115, y, 10, nombreCorto);
+            agregarTextoPdf(contenido, 360, y, 10, to_string(item.cantidad));
+
+            stringstream precio;
+            precio << "Q " << fixed << setprecision(2) << item.precio_unitario;
+            agregarTextoPdf(contenido, 415, y, 10, precio.str());
+
+            stringstream subtotal;
+            subtotal << "Q " << fixed << setprecision(2) << item.subtotal;
+            agregarTextoPdf(contenido, 500, y, 10, subtotal.str());
+
+            y -= 18;
+        }
+
+        agregarLineaPdf(contenido, 55, y + 6, 555, y + 6);
+
+        stringstream totalLinea;
+        totalLinea << "Q" << fixed << setprecision(2) << total;
+        agregarTextoPdf(contenido, 395, y - 25, 16, "TOTAL:", true);
+        agregarTextoPdf(contenido, 490, y - 25, 16, totalLinea.str(), true);
+        agregarTextoPdf(contenido, 230, y - 60, 13, "Gracias por su compra");
+
+        string stream = contenido.str();
+        vector<long> offsets;
+
+        pdf << "%PDF-1.4\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "1 0 obj\n";
+        pdf << "<< /Type /Catalog /Pages 2 0 R >>\n";
+        pdf << "endobj\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "2 0 obj\n";
+        pdf << "<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n";
+        pdf << "endobj\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "3 0 obj\n";
+        pdf << "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ";
+        pdf << "/Resources << /Font << /F1 4 0 R /F2 6 0 R >> >> /Contents 5 0 R >>\n";
+        pdf << "endobj\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "4 0 obj\n";
+        pdf << "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\n";
+        pdf << "endobj\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "5 0 obj\n";
+        pdf << "<< /Length " << stream.size() << " >>\n";
+        pdf << "stream\n";
+        pdf << stream;
+        pdf << "endstream\n";
+        pdf << "endobj\n";
+
+        offsets.push_back((long)pdf.tellp());
+        pdf << "6 0 obj\n";
+        pdf << "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>\n";
+        pdf << "endobj\n";
+
+        long xref = (long)pdf.tellp();
+        pdf << "xref\n";
+        pdf << "0 7\n";
+        pdf << "0000000000 65535 f \n";
+
+        for (long offset : offsets) {
+            pdf << setw(10) << setfill('0') << offset << " 00000 n \n";
+        }
+
+        pdf << setfill(' ');
+        pdf << "trailer\n";
+        pdf << "<< /Size 7 /Root 1 0 R >>\n";
+        pdf << "startxref\n";
+        pdf << xref << "\n";
+        pdf << "%%EOF";
+        pdf.close();
+
+        cout << "PDF de factura generada." << endl;
+    }
+
+public:
+    Venta() {
+        id_cliente = 0;
+        id_empleado = 1;
+        nit = "";
+        nombre_cliente = "";
+        serie = "A";
+        numero_factura = 0;
+        total = 0;
+    }
+
+    void registrarVenta() {
+        ConexionBD cn = ConexionBD();
+        cn.abrir_conexion();
+
+        if (!cn.getConector()) {
+            cout << "Conexion fallida." << endl;
+            return;
+        }
+
+        productos.clear();
+        total = 0;
+        serie = "A";
+
+        do {
+            nit = normalizarNit(leerTexto("Ingrese NIT del cliente o C/F: "));
+
+            if (!nitValido(nit)) {
+                cout << "[!] ERROR: NIT invalido. Use solo letras, numeros, guion o C/F." << endl;
+                continue;
+            }
+        } while (!buscarCliente(cn));
+
+        do {
+            id_empleado = leerEntero("Ingrese ID del empleado/cajero: ");
+        } while (!buscarEmpleado(cn));
+
+        while (true) {
+            int idProducto = leerEntero("Ingrese ID producto (0 para terminar): ");
+            if (idProducto == 0) break;
+
+            int existencia = 0;
+            string nombreProducto = "";
+            string marcaProducto = "";
+            double precioVenta = 0;
+
+            if (!buscarProducto(cn, idProducto, existencia, nombreProducto, marcaProducto, precioVenta)) {
+                continue;
+            }
+
+            int cantidad = leerEntero("Ingrese cantidad: ");
+
+            if (cantidad <= 0) {
+                cout << "La cantidad debe ser mayor a cero." << endl;
+                continue;
+            }
+
+            if (cantidad > existencia) {
+                cout << "Existencia insuficiente. Disponible: " << existencia << endl;
+                continue;
+            }
+
+            agregarProductoFactura(idProducto, cantidad, nombreProducto, marcaProducto, precioVenta);
+        }
+
+        if (productos.empty()) {
+            cout << "Venta cancelada. No se agregaron productos." << endl;
+            cn.cerrar_conexion();
+            return;
+        }
+
+        numero_factura = obtenerSiguienteFactura(cn.getConector());
+
+        if (mysql_query(cn.getConector(), "START TRANSACTION;")) {
+            cout << "[!] ERROR: No se pudo iniciar la venta. Intente nuevamente." << endl;
+            cn.cerrar_conexion();
+            return;
+        }
+
+        string consulta = "INSERT INTO ventas(no_factura,serie,fecha_factura,id_cliente,id_empleado,fecha_ingreso) VALUES (" +
+            to_string(numero_factura) + ",'" + serie + "',CURDATE()," +
+            to_string(id_cliente) + "," + to_string(id_empleado) + ",NOW());";
+
+        if (mysql_query(cn.getConector(), consulta.c_str())) {
+            cout << "[!] ERROR: No se pudo guardar la venta. Verifique cliente y empleado." << endl;
+            mysql_query(cn.getConector(), "ROLLBACK;");
+            cn.cerrar_conexion();
+            return;
+        }
+
+        int idVenta = obtenerUltimoId(cn.getConector());
+
+        for (ProductoFactura item : productos) {
+            consulta = "INSERT INTO ventas_detalle(id_venta,id_producto,cantidad,precio_unitario) VALUES (" +
+                to_string(idVenta) + "," + to_string(item.id_producto) + "," + to_string(item.cantidad) + "," +
+                decimalSql(item.precio_unitario) + ");";
+
+            if (mysql_query(cn.getConector(), consulta.c_str())) {
+                cout << "[!] ERROR: No se pudo guardar el detalle de la venta." << endl;
+                mysql_query(cn.getConector(), "ROLLBACK;");
+                cn.cerrar_conexion();
+                return;
+            }
+
+            consulta = "UPDATE productos SET existencia=existencia-" + to_string(item.cantidad) +
+                " WHERE id_producto=" + to_string(item.id_producto) + ";";
+
+            if (mysql_query(cn.getConector(), consulta.c_str())) {
+                cout << "[!] ERROR: No se pudo actualizar el inventario." << endl;
+                mysql_query(cn.getConector(), "ROLLBACK;");
+                cn.cerrar_conexion();
+                return;
+            }
+        }
+
+        if (mysql_query(cn.getConector(), "COMMIT;")) {
+            cout << "[!] ERROR: No se pudo confirmar la venta." << endl;
+            mysql_query(cn.getConector(), "ROLLBACK;");
+            cn.cerrar_conexion();
+            return;
+        }
+
+        imprimirFactura();
+        generarFacturaPdf();
+        cn.cerrar_conexion();
+    }
+};
